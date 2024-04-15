@@ -14,6 +14,9 @@ import traceback
 
 from datasets import load_dataset, load_from_disk
 from ghapi.all import GhApi
+from gitlab import Gitlab
+from gitlab.v4.objects.projects import  Project
+
 from io import BytesIO
 from pathlib import Path
 from subprocess import PIPE, STDOUT
@@ -22,23 +25,22 @@ from typing import Any, List, Tuple, Dict
 LOGGER_NAME = "intercode"
 START_UP_DELAY = 5
 TIMEOUT_DURATION = 25
-GITHUB_ISSUE_URL_PATTERN = re.compile(r'github\.com\/(.*?)\/(.*?)\/issues\/(\d+)')
-
+ISSUE_URL_PATTERN = re.compile(r'/(.*?)\/(.*?)\/issues\/(\d+)')
 logger = logging.getLogger(LOGGER_NAME)
 
 
 def get_data_path_name(data_path: str):
     # if data_path is a file, return the file stem
     # elif it's a github url, return the owner__repo_name
-    match = GITHUB_ISSUE_URL_PATTERN.search(data_path)
+    match = ISSUE_URL_PATTERN.search(data_path)
     if match:
         owner, repo, issue_number = match.groups()
         return f"{owner}__{repo}"
     return Path(data_path).stem
 
 
-def is_from_github_url(data_path: str):
-    return GITHUB_ISSUE_URL_PATTERN.search(data_path) is not None
+def is_issue_url(data_path: str):
+    return ISSUE_URL_PATTERN.search(data_path) is not None
 
 
 def copy_file_to_container(container, contents, container_path):
@@ -280,7 +282,12 @@ def get_commit(api: GhApi, owner: str, repo: str, base_commit: str = None):
         commit = api.repos.list_commits(owner, repo)[0]
     return commit
 
-
+def get_gitlab_commit(project: Project, base_commit: str = None):
+    if base_commit:
+        commit = project.commits.get(base_commit)
+    else:
+        commit = project.commits.list()[0]
+    return commit
 
 class InvalidGithubURL(ValueError):
     ...
@@ -288,7 +295,8 @@ class InvalidGithubURL(ValueError):
 
 def parse_gh_issue_url(issue_url: str) -> Tuple[str, str, str]:
     """Return owner, repo, issue number from issue url"""
-    match = GITHUB_ISSUE_URL_PATTERN.search(issue_url)
+    issue_url = issue_url.lstrip("https://").lstrip("http://")
+    match = ISSUE_URL_PATTERN.search(issue_url)
     if not match:
         raise InvalidGithubURL(f"Invalid GitHub issue URL: {issue_url}")
     res = match.groups()
@@ -332,9 +340,34 @@ def get_instances(file_path: str, base_commit: str = None, split: str = None, to
             return dataset_or_dict[split]
         return dataset_or_dict
 
+    # If file_path is a file, load the file
+    if file_path.endswith(".json"):
+        return json.load(open(file_path))
+    if file_path.endswith(".jsonl"):
+        return [json.loads(x) for x in open(file_path, 'r').readlines()]
+
+    # Attempt load from HF datasets as a last resort
+    try:
+        return load_dataset(file_path, split=split)
+    except:
+        raise ValueError(
+            f"Could not load instances from {file_path}. "
+            "Please ensure --data_path is a GitHub URL, a SWE-bench HuggingFace dataset, or a JSON/JSONL file."
+        )
+
+def get_github_instances(file_path: str, base_commit: str = None, split: str = None, token: str = None):
+    """
+    Getter function for handling json, jsonl files
+
+    Arguments:
+        file_path (str): Path to file
+    Returns:
+        List of instances
+    """
+
     # If file_path is a github issue url, fetch the issue and return a single instance
-    if is_from_github_url(file_path):
-        try: 
+    if is_issue_url(file_path):
+        try:
             owner, repo, issue_number = parse_gh_issue_url(file_path)
         except InvalidGithubURL:
             pass
@@ -353,21 +386,49 @@ def get_instances(file_path: str, base_commit: str = None, split: str = None, to
             return [record,]
     elif base_commit is not None:
         raise ValueError("base_commit must be None if data_path is not a github issue url")
+    return get_instances(file_path, base_commit, split, token)
 
-    # If file_path is a file, load the file
-    if file_path.endswith(".json"):
-        return json.load(open(file_path))
-    if file_path.endswith(".jsonl"):
-        return [json.loads(x) for x in open(file_path, 'r').readlines()]
+def get_gitlab_project(api: Gitlab, owner: str, repo: str):
+    projects = api.projects.list(search=repo)
+    if len(projects) > 0:
+        project = projects[0]
+        if project.path_with_namespace == f"{owner}/{repo}":
+            return project
+    return None
 
-    # Attempt load from HF datasets as a last resort
-    try:
-        return load_dataset(file_path, split=split)
-    except:
-        raise ValueError(
-            f"Could not load instances from {file_path}. "
-            "Please ensure --data_path is a GitHub URL, a SWE-bench HuggingFace dataset, or a JSON/JSONL file."
-        )
+
+def get_gitlab_instances(repo_host: str, file_path: str, base_commit: str = None, split: str = None, token: str = None):
+    """
+    Getter function for handling json, jsonl files
+
+    Arguments:
+        file_path (str): Path to file
+    Returns:
+        List of instances
+    """
+    # If file_path is a github issue url, fetch the issue and return a single instance
+    if is_issue_url(file_path):
+        try:
+            owner, repo, issue_number = parse_gh_issue_url(file_path)
+        except InvalidGithubURL:
+            pass
+        else:
+            record = dict()
+            api = Gitlab(url=repo_host, private_token=token)
+            project = get_gitlab_project(api, owner, repo)
+            issue = project.issues.get(issue_number)
+            title = issue.title if issue.title else ""
+            description = issue.description if issue.description else ""
+            text = f"{title}\n{description}\n"
+            record["repo"] = f"{owner}/{repo}"
+            record["base_commit"] = base_commit if base_commit else get_gitlab_commit(project, base_commit).id
+            record["version"] = record["base_commit"][:7]
+            record["problem_statement"] = text
+            record["instance_id"] = f"{owner}__{repo}-i{issue_number}"
+            return [record, ]
+    elif base_commit is not None:
+        raise ValueError("base_commit must be None if data_path is not a github issue url")
+    return get_instances(file_path, base_commit, split, token)
 
 
 def get_associated_commit_urls(org: str, repo: str, issue_number: str, *, token: str = "") -> list[str]:

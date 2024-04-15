@@ -21,8 +21,9 @@ from sweagent.environment.utils import (
     format_trajectory_markdown,
     get_container,
     get_gh_issue_data,
-    get_instances,
-    is_from_github_url,
+    get_github_instances,
+    get_gitlab_instances,
+    is_issue_url,
     parse_gh_issue_url,
     parse_gh_repo_url,
     read_with_timeout,
@@ -58,6 +59,9 @@ class EnvironmentArguments(FrozenSerializable):
     timeout: int = 35
     verbose: bool = False
     no_mirror: bool = False
+    repo_type: str = "github"
+    repo_host: str = "github.com"
+    auth_str: str = ""
 
 
 class SWEEnv(gym.Env):
@@ -75,7 +79,13 @@ class SWEEnv(gym.Env):
         self.logger = logger
         self.persistent = args.container_name is not None
         self.returncode = None
-        self.is_from_github_url = is_from_github_url(args.data_path)
+        self.repo_type = args.repo_type
+        self.repo_host = args.repo_host
+        if not self.repo_host.startswith("http://"):
+            self.repo_host = "http://" + self.repo_host
+
+        self.is_issue_url = is_issue_url(args.data_path)
+
         if not self.args.verbose:
             self.logger.disabled = True
 
@@ -89,17 +99,32 @@ class SWEEnv(gym.Env):
             logger.warning("Failed to get commit hash for this repo")
             self.commit_sha = None
 
-        # Set GitHub Token
-        self.token = os.environ.get("GITHUB_TOKEN", None)
-        if (self.token is None or self.token == "") and os.path.isfile(
+        if os.path.isfile(
             os.path.join(os.getcwd(), "keys.cfg")
         ):
             self.cfg = config.Config(os.path.join(os.getcwd(), "keys.cfg"))
-            self.token = self.cfg.get("GITHUB_TOKEN", None)
+            if self.repo_type == "github":
+                self.token = os.environ.get("GITHUB_TOKEN", None)
+                if not self.token:
+                    self.token = self.cfg.get("GITHUB_TOKEN", None)
+                self.auth_str = self.token
+
+            if self.repo_type == "gitlab":
+                self.token = os.environ.get("GITLAB_TOKEN", None)
+                gitlab_token_name = os.environ.get("GITLAB_TOKEN_NAME", "")
+                if not self.token:
+                    self.token = self.cfg.get("GITLAB_TOKEN", None)
+                if not gitlab_token_name:
+                    gitlab_token_name = self.cfg.get("GITLAB_TOKEN_NAME", None)
+                self.auth_str = gitlab_token_name + ':' + self.token
 
         # Load Task Instances
         self.data_path = self.args.data_path
-        self.data = get_instances(self.data_path, self.args.base_commit, self.args.split, token=self.token)
+        if self.repo_type == "github":
+            self.data = get_github_instances(self.repo_host, self.data_path, split=self.args.split, token=self.token)
+        elif self.repo_type == "gitlab":
+            self.data = get_gitlab_instances(self.repo_host, self.data_path, self.args.base_commit, self.args.split, token=self.token)
+
         self.logger.info(f"💽 Loaded dataset from {self.data_path}")
 
         # Establish connection with execution container
@@ -144,18 +169,19 @@ class SWEEnv(gym.Env):
         self.communicate(input="cd /")
         folders = self.communicate(input="ls").split("\n")
         repo_name = self.record["repo"].replace("/", "__")
+
         if repo_name not in folders:
-            if not self.args.no_mirror and not self.is_from_github_url:
+            if not self.args.no_mirror and not self.is_issue_url:
                 self.logger.info(f"{repo_name} not found in container, cloning...")
                 self.communicate_with_handling(
-                    input=f"git clone https://{self.token}@github.com/swe-bench/{repo_name}.git",
+                    input=f"git clone https://{self.auth_str}@{self.args.repo_host}/swe-bench/{repo_name}.git",
                     error_msg="Failed to clone repository from mirror",
                     timeout_duration=LONG_TIMEOUT,
                 )
             else:
                 logger.info(f"Trying to clone from non-mirror...")
                 self.communicate_with_handling(
-                    input=f"git clone https://{self.token}@github.com/{self.record['repo']}.git {repo_name}",
+                    input=f"git clone https://{self.auth_str}@{self.args.repo_host}/{self.record['repo']}.git {repo_name}",
                     error_msg="Failed to clone repository from non-mirror",
                     timeout_duration=LONG_TIMEOUT,
                 )
@@ -205,7 +231,7 @@ class SWEEnv(gym.Env):
 
         # Call install environment helper function if specified
         if self.install_environment:
-            if self.is_from_github_url:
+            if self.is_issue_url:
                 logger.warning((
                     "install_environment is set to True, but the data path is a GitHub URL. "
                     "Skipping conda environment installation."

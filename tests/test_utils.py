@@ -1,4 +1,4 @@
-from sweagent.environment.utils import format_trajectory_markdown, _MARKDOWN_TRAJECTORY_EMOJI_MAPPING, remove_triple_backticks, parse_gh_repo_url, parse_gh_issue_url, is_from_github_url, get_associated_commit_urls
+from sweagent.environment.utils import format_trajectory_markdown, _MARKDOWN_TRAJECTORY_EMOJI_MAPPING, remove_triple_backticks, parse_gh_repo_url, parse_gh_issue_url, is_issue_url, get_associated_commit_urls
 
 def test_format_trajectory_markdown(test_trajectory):
     formatted = format_trajectory_markdown(test_trajectory["trajectory"])
@@ -27,9 +27,9 @@ def test_parse_gh_issue_url():
     assert no == "43"
 
 
-def test_is_from_github_url():
-    assert not is_from_github_url("")
-    assert is_from_github_url("https://github.com/princeton-nlp/SWE-agent/issues/43")
+def test_is_issue_url():
+    assert not is_issue_url("")
+    assert is_issue_url("https://github.com/princeton-nlp/SWE-agent/issues/43")
 
 
 def test_get_associated_commit_urls():
