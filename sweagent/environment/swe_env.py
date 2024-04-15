@@ -24,6 +24,7 @@ from sweagent.environment.utils import (
     get_github_instances,
     get_gitlab_instances,
     is_issue_url,
+    is_github_issue_url,
     parse_gh_issue_url,
     parse_gh_repo_url,
     read_with_timeout,
@@ -85,6 +86,7 @@ class SWEEnv(gym.Env):
             self.repo_host = "http://" + self.repo_host
 
         self.is_issue_url = is_issue_url(args.data_path)
+        self.is_github_issue_url = is_github_issue_url(args.data_path)
 
         if not self.args.verbose:
             self.logger.disabled = True
@@ -171,7 +173,7 @@ class SWEEnv(gym.Env):
         repo_name = self.record["repo"].replace("/", "__")
 
         if repo_name not in folders:
-            if not self.args.no_mirror and not self.is_issue_url:
+            if not self.args.no_mirror and not self.is_github_issue_url:
                 self.logger.info(f"{repo_name} not found in container, cloning...")
                 self.communicate_with_handling(
                     input=f"git clone https://{self.auth_str}@{self.args.repo_host}/swe-bench/{repo_name}.git",
@@ -233,7 +235,7 @@ class SWEEnv(gym.Env):
         if self.install_environment:
             if self.is_issue_url:
                 logger.warning((
-                    "install_environment is set to True, but the data path is a GitHub URL. "
+                    "install_environment is set to True, but the data path is a GitHub or GitLab URL. "
                     "Skipping conda environment installation."
                     ))
             else:

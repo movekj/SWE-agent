@@ -26,6 +26,7 @@ LOGGER_NAME = "intercode"
 START_UP_DELAY = 5
 TIMEOUT_DURATION = 25
 ISSUE_URL_PATTERN = re.compile(r'/(.*?)\/(.*?)\/issues\/(\d+)')
+GITHUB_ISSUE_URL_PATTERN = re.compile(r'github\.com\/(.*?)\/(.*?)\/issues\/(\d+)')
 logger = logging.getLogger(LOGGER_NAME)
 
 
@@ -41,6 +42,9 @@ def get_data_path_name(data_path: str):
 
 def is_issue_url(data_path: str):
     return ISSUE_URL_PATTERN.search(data_path) is not None
+
+def is_github_issue_url(data_path: str):
+    return GITHUB_ISSUE_URL_PATTERN.search(data_path) is not None
 
 
 def copy_file_to_container(container, contents, container_path):
